@@ -18,6 +18,14 @@ import threading
 PORT = int(os.environ.get("CLAUDE_PROXY_PORT", 8765))
 WORKSPACE = r"C:\pascal\AI workspaces"
 
+# subprocess doesn't inherit the full user PATH on Windows, so npm-installed
+# binaries aren't found. Hardcode the known location and patch it into env.
+_CLAUDE = r"C:\Users\pasca\AppData\Roaming\npm\claude.cmd"
+_NPM_BIN = r"C:\Users\pasca\AppData\Roaming\npm"
+_ENV = os.environ.copy()
+if _NPM_BIN not in _ENV.get("PATH", ""):
+    _ENV["PATH"] = _NPM_BIN + ";" + _ENV.get("PATH", "")
+
 # API key: auto-generated on first run, saved to .api_key (gitignored)
 KEY_FILE = pathlib.Path(__file__).parent / ".api_key"
 if KEY_FILE.exists():
@@ -36,15 +44,18 @@ def run_claude(text: str, new_session: bool) -> str:
     global _session_active
     with _session_lock:
         if new_session or not _session_active:
-            cmd = ["claude", "--print", "-p", text,
-                   "--output-format", "json",
-                   "--dangerously-skip-permissions"]
+            parts = [_CLAUDE, "--print", "-p", text,
+                     "--output-format", "json",
+                     "--dangerously-skip-permissions"]
             _session_active = True
         else:
-            cmd = ["claude", "--continue", "--print", "-p", text,
-                   "--output-format", "json",
-                   "--dangerously-skip-permissions"]
+            parts = [_CLAUDE, "--continue", "--print", "-p", text,
+                     "--output-format", "json",
+                     "--dangerously-skip-permissions"]
 
+    # shell=True routes through cmd.exe, which is required to run .cmd files
+    # on Windows. list2cmdline handles proper quoting of all arguments.
+    cmd = subprocess.list2cmdline(parts)
     result = subprocess.run(
         cmd,
         cwd=WORKSPACE,
@@ -52,6 +63,8 @@ def run_claude(text: str, new_session: bool) -> str:
         text=True,
         encoding="utf-8",
         timeout=300,
+        env=_ENV,
+        shell=True,
     )
 
     if result.returncode != 0:
