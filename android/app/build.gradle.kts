@@ -16,7 +16,7 @@ android {
 
         // Baked in at build time from GitHub Actions secrets.
         // Override at runtime via the in-app Settings screen.
-        val serverUrl = System.getenv("SERVER_URL") ?: "https://es-lt-007702-8765.devtunnels.ms"
+        val serverUrl = System.getenv("SERVER_URL") ?: "https://claude-bridge-8765.uks1.devtunnels.ms"
         val apiKey = System.getenv("API_KEY") ?: ""
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
         buildConfigField("String", "API_KEY", "\"$apiKey\"")

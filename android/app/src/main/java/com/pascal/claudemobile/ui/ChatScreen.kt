@@ -13,7 +13,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -22,10 +22,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -42,22 +44,74 @@ fun ChatScreen(
     onOpenSettings: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
-    val messages by viewModel.messages.collectAsStateWithLifecycle()
-    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val tabs by viewModel.tabs.collectAsStateWithLifecycle()
+    val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    error?.let { LaunchedEffect(it) { viewModel.clearError() } }
+
+    // Right-side drawer: wrap in Rtl then flip content back to Ltr.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    SessionHistoryDrawer(
+                        sessions = sessions,
+                        onSelect = { entry ->
+                            viewModel.openSession(entry)
+                            scope.launch { drawerState.close() }
+                        },
+                        onRefresh = { viewModel.refreshSessions() },
+                    )
+                }
+            },
+        ) {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                ChatBody(
+                    tabs = tabs,
+                    activeTabId = activeTabId,
+                    onSelectTab = viewModel::switchTab,
+                    onCloseTab = viewModel::closeTab,
+                    onNewTab = viewModel::newTab,
+                    onSendMessage = viewModel::sendMessage,
+                    onOpenSettings = onOpenSettings,
+                    onOpenHistory = {
+                        viewModel.refreshSessions()
+                        scope.launch { drawerState.open() }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatBody(
+    tabs: List<com.pascal.claudemobile.data.Tab>,
+    activeTabId: String,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onNewTab: () -> Unit,
+    onSendMessage: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenHistory: () -> Unit,
+) {
+    val active = tabs.firstOrNull { it.id == activeTabId } ?: tabs.firstOrNull()
+    val messages = active?.messages.orEmpty()
+    val isLoading = active?.isLoading ?: false
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(messages.size, activeTabId) {
         if (messages.isNotEmpty()) {
             scope.launch { listState.animateScrollToItem(messages.size - 1) }
-        }
-    }
-
-    error?.let { err ->
-        LaunchedEffect(err) {
-            viewModel.clearError()
         }
     }
 
@@ -66,8 +120,8 @@ fun ChatScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium) },
                 actions = {
-                    IconButton(onClick = { viewModel.newChat() }) {
-                        Icon(Icons.Default.Add, contentDescription = "New chat")
+                    IconButton(onClick = onOpenHistory) {
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "History")
                     }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -80,8 +134,6 @@ fun ChatScreen(
         },
         bottomBar = {
             Surface(shadowElevation = 4.dp) {
-                // safeDrawing.only(Bottom) = max(IME, nav bar). When keyboard is up,
-                // input sits above keyboard. When closed, it sits above nav buttons.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -98,8 +150,7 @@ fun ChatScreen(
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = {
                             if (inputText.isNotBlank() && !isLoading) {
-                                viewModel.sendMessage(inputText.trim())
-                                inputText = ""
+                                onSendMessage(inputText.trim()); inputText = ""
                             }
                         }),
                         maxLines = 5,
@@ -115,8 +166,7 @@ fun ChatScreen(
                     FilledIconButton(
                         onClick = {
                             if (inputText.isNotBlank() && !isLoading) {
-                                viewModel.sendMessage(inputText.trim())
-                                inputText = ""
+                                onSendMessage(inputText.trim()); inputText = ""
                             }
                         },
                         enabled = inputText.isNotBlank() && !isLoading,
@@ -127,38 +177,40 @@ fun ChatScreen(
             }
         },
     ) { padding ->
-        if (messages.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        stringResource(R.string.app_name),
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "AI Workspaces",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            TabBar(
+                tabs = tabs,
+                activeTabId = activeTabId,
+                onSelect = onSelectTab,
+                onClose = onCloseTab,
+                onNew = onNewTab,
+            )
+            HorizontalDivider()
+
+            if (messages.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            stringResource(R.string.app_name),
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "AI Workspaces",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
                 }
-            }
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(messages, key = { it.id }) { message ->
-                    MessageBubble(message)
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(messages, key = { it.id }) { MessageBubble(it) }
                 }
             }
         }
@@ -209,10 +261,7 @@ private fun MessageBubble(message: Message) {
                     .combinedClickable(onClick = {}, onLongClick = copy),
             ) {
                 if (message.content.isEmpty() && message.isStreaming) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                    )
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                 } else {
                     SelectionContainer {
                         Text(

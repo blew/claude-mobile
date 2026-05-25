@@ -6,6 +6,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -28,21 +29,30 @@ class ClaudeRepository(context: Context) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(300, TimeUnit.SECONDS)
+        .readTimeout(600, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * POST /message. The proxy may emit:
+     *   {"type":"session","id":sid}  — captured tab's session id (once)
+     *   {"type":"text","content":...} — streaming text chunk (repeats)
+     *   {"type":"error","content":...}
+     *   {"type":"done"}
+     */
     fun sendMessage(
         text: String,
-        isNewSession: Boolean,
+        sessionId: String?,
+        onSession: (String) -> Unit,
         onChunk: (String) -> Unit,
         onDone: () -> Unit,
         onError: (String) -> Unit,
     ) {
-        val body = JSONObject()
-            .put("text", text)
-            .put("new_session", isNewSession)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
+        Logger.log("HTTP", "POST $serverUrl/message session=${sessionId ?: "<new>"} len=${text.length}")
+
+        val body = JSONObject().apply {
+            put("text", text)
+            if (sessionId != null) put("session_id", sessionId)
+        }.toString().toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
             .url("$serverUrl/message")
@@ -50,49 +60,89 @@ class ClaudeRepository(context: Context) {
             .post(body)
             .build()
 
-        Logger.log("HTTP", "POST $serverUrl/message new_session=$isNewSession len=${text.length}")
-
         try {
             val response = client.newCall(request).execute()
             Logger.log("HTTP", "Response code=${response.code}")
             if (!response.isSuccessful) {
-                val body = response.body?.string()?.take(500) ?: ""
-                Logger.log("HTTP", "Error body: $body")
+                val errBody = response.body?.string()?.take(500) ?: ""
+                Logger.log("HTTP", "Error body: $errBody")
                 onError("Server returned ${response.code}")
                 return
             }
             val reader = response.body?.byteStream()?.bufferedReader()
-                ?: run {
-                    Logger.log("HTTP", "Empty response body")
-                    onError("Empty response body"); return
-                }
+                ?: run { onError("Empty response body"); return }
 
             reader.forEachLine { line ->
-                if (line.startsWith("data: ")) {
-                    try {
-                        val json = JSONObject(line.removePrefix("data: "))
-                        when (json.getString("type")) {
-                            "text" -> {
-                                val content = json.getString("content")
-                                Logger.log("SSE", "text chunk: ${content.take(120)}…")
-                                onChunk(content)
-                            }
-                            "done" -> {
-                                Logger.log("SSE", "done")
-                                onDone()
-                            }
-                            "error" -> {
-                                val err = json.optString("content", "Unknown error")
-                                Logger.log("SSE", "error: $err")
-                                onError(err)
-                            }
-                        }
-                    } catch (_: Exception) { }
-                }
+                if (!line.startsWith("data: ")) return@forEachLine
+                try {
+                    val json = JSONObject(line.removePrefix("data: "))
+                    when (json.getString("type")) {
+                        "text" -> onChunk(json.getString("content"))
+                        "session" -> onSession(json.getString("id"))
+                        "done" -> onDone()
+                        "error" -> onError(json.optString("content", "Unknown error"))
+                    }
+                } catch (_: Exception) { }
             }
         } catch (e: Exception) {
             Logger.log("HTTP", "EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
             onError(e.message ?: "Connection failed")
+        }
+    }
+
+    fun listSessions(): List<SessionListEntry> {
+        Logger.log("HTTP", "GET $serverUrl/sessions")
+        val request = Request.Builder()
+            .url("$serverUrl/sessions")
+            .addHeader("X-API-Key", apiKey)
+            .get()
+            .build()
+        return try {
+            val response = client.newCall(request).execute()
+            Logger.log("HTTP", "Sessions response code=${response.code}")
+            if (!response.isSuccessful) return emptyList()
+            val arr = JSONArray(response.body?.string().orEmpty())
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        SessionListEntry(
+                            id = obj.getString("id"),
+                            title = obj.getString("title"),
+                            modified = obj.getLong("modified"),
+                            turns = obj.optInt("turns", 0),
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Logger.log("HTTP", "listSessions EXCEPTION: ${e.message}")
+            emptyList()
+        }
+    }
+
+    fun getSessionMessages(sessionId: String): List<Message> {
+        Logger.log("HTTP", "GET $serverUrl/sessions/$sessionId")
+        val request = Request.Builder()
+            .url("$serverUrl/sessions/$sessionId")
+            .addHeader("X-API-Key", apiKey)
+            .get()
+            .build()
+        return try {
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return emptyList()
+            val obj = JSONObject(response.body?.string().orEmpty())
+            val arr = obj.optJSONArray("messages") ?: return emptyList()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    val role = if (m.optString("role") == "user") Role.USER else Role.ASSISTANT
+                    add(Message(role = role, content = m.optString("content")))
+                }
+            }
+        } catch (e: Exception) {
+            Logger.log("HTTP", "getSessionMessages EXCEPTION: ${e.message}")
+            emptyList()
         }
     }
 }
