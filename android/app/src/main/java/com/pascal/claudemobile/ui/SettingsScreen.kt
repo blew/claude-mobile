@@ -15,6 +15,7 @@ import com.pascal.claudemobile.ChatViewModel
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenLog: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
     var serverUrl by remember { mutableStateOf(viewModel.serverUrl) }
@@ -76,6 +77,15 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            OutlinedButton(
+                onClick = onOpenLog,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("View debug log")
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

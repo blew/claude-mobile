@@ -50,28 +50,48 @@ class ClaudeRepository(context: Context) {
             .post(body)
             .build()
 
+        Logger.log("HTTP", "POST $serverUrl/message new_session=$isNewSession len=${text.length}")
+
         try {
             val response = client.newCall(request).execute()
+            Logger.log("HTTP", "Response code=${response.code}")
             if (!response.isSuccessful) {
+                val body = response.body?.string()?.take(500) ?: ""
+                Logger.log("HTTP", "Error body: $body")
                 onError("Server returned ${response.code}")
                 return
             }
             val reader = response.body?.byteStream()?.bufferedReader()
-                ?: run { onError("Empty response body"); return }
+                ?: run {
+                    Logger.log("HTTP", "Empty response body")
+                    onError("Empty response body"); return
+                }
 
             reader.forEachLine { line ->
                 if (line.startsWith("data: ")) {
                     try {
                         val json = JSONObject(line.removePrefix("data: "))
                         when (json.getString("type")) {
-                            "text" -> onChunk(json.getString("content"))
-                            "done" -> onDone()
-                            "error" -> onError(json.optString("content", "Unknown error"))
+                            "text" -> {
+                                val content = json.getString("content")
+                                Logger.log("SSE", "text chunk: ${content.take(120)}…")
+                                onChunk(content)
+                            }
+                            "done" -> {
+                                Logger.log("SSE", "done")
+                                onDone()
+                            }
+                            "error" -> {
+                                val err = json.optString("content", "Unknown error")
+                                Logger.log("SSE", "error: $err")
+                                onError(err)
+                            }
                         }
                     } catch (_: Exception) { }
                 }
             }
         } catch (e: Exception) {
+            Logger.log("HTTP", "EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
             onError(e.message ?: "Connection failed")
         }
     }
