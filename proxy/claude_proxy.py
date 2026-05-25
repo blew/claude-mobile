@@ -132,8 +132,17 @@ def stream_claude(text: str, session_id: str | None):
                 proc.kill()
 
 
-def _extract_first_user_text(jsonl_path: pathlib.Path) -> str:
-    """Read the file until we find the first user message, return its text."""
+def _extract_session_title(jsonl_path: pathlib.Path) -> str:
+    """
+    Pull the cleanest available title for a session.
+
+    Claude Code writes an `{"type":"ai-title","aiTitle":"..."}` line once a
+    session is established — that's the same title the VS Code extension shows
+    in its history panel. Prefer that. Fall back to the first user message
+    text for sessions that don't have one yet.
+    """
+    ai_title = ""
+    first_user_text = ""
     try:
         with jsonl_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -141,19 +150,24 @@ def _extract_first_user_text(jsonl_path: pathlib.Path) -> str:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if entry.get("type") != "user":
-                    continue
-                message = entry.get("message", {})
-                content = message.get("content")
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            return block.get("text", "")
+                kind = entry.get("type")
+                if kind == "ai-title":
+                    ai_title = entry.get("aiTitle", "").strip()
+                    if ai_title:
+                        return ai_title
+                elif kind == "user" and not first_user_text:
+                    message = entry.get("message", {})
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        first_user_text = content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                first_user_text = block.get("text", "")
+                                break
     except OSError:
         pass
-    return ""
+    return ai_title or first_user_text
 
 
 def _count_turns(jsonl_path: pathlib.Path) -> int:
@@ -178,7 +192,7 @@ def list_sessions() -> list[dict]:
     sessions = []
     for jsonl in _PROJECTS_DIR.glob("*.jsonl"):
         sid = jsonl.stem
-        title = _extract_first_user_text(jsonl).strip()
+        title = _extract_session_title(jsonl).strip()
         if not title:
             title = "(empty session)"
         # Trim to a UI-friendly length
