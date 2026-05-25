@@ -1,0 +1,16 @@
+# Proxy
+proxy/.api_key
+proxy/__pycache__/
+*.pyc
+
+# Android
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/**/*.iml
+
+# General
+.DS_Store
+Thumbs.db
