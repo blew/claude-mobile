@@ -19,18 +19,23 @@ Endpoints:
   GET  /sessions              List past sessions in the workspace project.
   GET  /sessions/<id>         Return message list for a specific session.
 """
+import atexit
 import http.server
 import json
 import os
 import pathlib
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import urlparse
 
 PORT = int(os.environ.get("CLAUDE_PROXY_PORT", 8765))
+_VERSION = "2.1"
+_START_TIME = time.time()
 WORKSPACE = r"C:\pascal\AI workspaces"
 
 # subprocess on Windows doesn't inherit the full user PATH from background hosts,
@@ -269,12 +274,23 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # /health is unauthenticated — used by the app for connectivity checks.
+        if path == "/health":
+            self._send_json(200, {
+                "status": "ok",
+                "version": _VERSION,
+                "uptime_s": int(time.time() - _START_TIME),
+                "port": PORT,
+                "workspace": WORKSPACE,
+            })
+            return
+
         if not self._authorized():
             self._send_json(401, {"error": "Unauthorized"})
             return
-
-        parsed = urlparse(self.path)
-        path = parsed.path
 
         if path == "/sessions":
             self._send_json(200, list_sessions())
@@ -339,18 +355,32 @@ class ThreadingHTTPServer(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+def _log_shutdown(reason: str) -> None:
+    uptime = int(time.time() - _START_TIME)
+    print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Proxy stopping — reason: {reason}, uptime: {uptime}s")
+    sys.stdout.flush()
+
+
 def main():
-    print(f"Claude Bridge Proxy")
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] Claude Bridge Proxy v{_VERSION} starting")
     print(f"  Workspace  : {WORKSPACE}")
     print(f"  Port       : {PORT}")
     print(f"  API Key    : {API_KEY}")
     print(f"  Projects   : {_PROJECTS_DIR}")
+    print(f"  PID        : {os.getpid()}")
     print()
+    sys.stdout.flush()
+
+    atexit.register(_log_shutdown, "atexit")
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda s, f: (_log_shutdown(signal.Signals(s).name), sys.exit(0)))
+
     server = ThreadingHTTPServer(("", PORT), ProxyHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        _log_shutdown("KeyboardInterrupt")
 
 
 if __name__ == "__main__":

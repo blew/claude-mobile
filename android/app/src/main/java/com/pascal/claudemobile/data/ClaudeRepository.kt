@@ -90,6 +90,25 @@ class ClaudeRepository(context: Context) {
         }
     }
 
+    /** GET /health — no auth required. Returns a human-readable status string for logging. */
+    fun checkHealth(): String {
+        return try {
+            val request = Request.Builder()
+                .url("$serverUrl/health")
+                .get()
+                .build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+            if (response.isSuccessful) {
+                "Proxy OK — $body"
+            } else {
+                "Proxy /health returned ${response.code}: $body"
+            }
+        } catch (e: Exception) {
+            "Proxy unreachable: ${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
     fun listSessions(): List<SessionListEntry> {
         Logger.log("HTTP", "GET $serverUrl/sessions")
         val request = Request.Builder()
@@ -99,8 +118,19 @@ class ClaudeRepository(context: Context) {
             .build()
         return try {
             val response = client.newCall(request).execute()
-            Logger.log("HTTP", "Sessions response code=${response.code}")
-            if (!response.isSuccessful) return emptyList()
+            val code = response.code
+            if (!response.isSuccessful) {
+                val hint = when (code) {
+                    502 -> "Proxy offline — restart Task Scheduler tasks"
+                    401 -> "Wrong API key — check Settings"
+                    504 -> "Tunnel timeout — devtunnel may be down"
+                    else -> "Unexpected error"
+                }
+                val body = response.body?.string()?.take(200).orEmpty()
+                Logger.log("HTTP", "Sessions failed code=$code ($hint) body=$body")
+                return emptyList()
+            }
+            Logger.log("HTTP", "Sessions response code=$code")
             val arr = JSONArray(response.body?.string().orEmpty())
             buildList {
                 for (i in 0 until arr.length()) {
@@ -116,7 +146,7 @@ class ClaudeRepository(context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Logger.log("HTTP", "listSessions EXCEPTION: ${e.message}")
+            Logger.log("HTTP", "listSessions EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
             emptyList()
         }
     }

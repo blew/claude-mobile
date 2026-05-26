@@ -42,6 +42,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         _sessions.update { localStore.listEntries() }
+        viewModelScope.launch(Dispatchers.IO) {
+            val health = repository.checkHealth()
+            Logger.log("HEALTH", health)
+        }
         syncRecentSessions(limit = 10)
     }
 
