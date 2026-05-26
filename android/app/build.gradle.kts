@@ -11,8 +11,8 @@ android {
         applicationId = "com.pascal.claudemobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         // Baked in at build time from GitHub Actions secrets.
         // Override at runtime via the in-app Settings screen.

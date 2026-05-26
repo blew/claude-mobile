@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pascal.claudemobile.data.ClaudeRepository
+import com.pascal.claudemobile.data.LocalSessionStore
+import com.pascal.claudemobile.data.Logger
 import com.pascal.claudemobile.data.Message
 import com.pascal.claudemobile.data.Role
 import com.pascal.claudemobile.data.SessionListEntry
@@ -18,6 +20,7 @@ import kotlinx.coroutines.launch
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = ClaudeRepository(application)
+    private val localStore = LocalSessionStore(application)
 
     private val _tabs = MutableStateFlow<List<Tab>>(listOf(Tab(title = Tab.DEFAULT_TITLE)))
     val tabs: StateFlow<List<Tab>> = _tabs.asStateFlow()
@@ -37,6 +40,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     val activeTab: Tab? get() = _tabs.value.firstOrNull { it.id == _activeTabId.value }
 
+    init {
+        _sessions.update { localStore.listEntries() }
+        syncRecentSessions(limit = 10)
+    }
+
     fun newTab() {
         val tab = Tab(title = Tab.DEFAULT_TITLE)
         _tabs.update { it + tab }
@@ -46,7 +54,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun closeTab(tabId: String) {
         val current = _tabs.value
         if (current.size <= 1) {
-            // Keep at least one tab around; just reset it.
             _tabs.update { listOf(Tab(title = Tab.DEFAULT_TITLE)) }
             _activeTabId.update { _tabs.value.first().id }
             return
@@ -108,6 +115,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             },
                         )
                     }
+                    persistActiveTab(tabId)
                 },
                 onError = { err ->
                     _error.update { err }
@@ -124,9 +132,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshSessions() {
+    /** Manual refresh from the history drawer — same path as startup sync. */
+    fun refreshSessions() = syncRecentSessions(limit = 10)
+
+    /**
+     * Pull the N most-recently-modified sessions from the proxy and cache them
+     * locally, then re-emit the merged (local ∪ remote) list. Local-only sessions
+     * stay visible when the proxy is unreachable.
+     */
+    private fun syncRecentSessions(limit: Int) {
         viewModelScope.launch(Dispatchers.IO) {
-            _sessions.update { repository.listSessions() }
+            val remote = repository.listSessions()
+            if (remote.isEmpty()) {
+                _sessions.update { localStore.listEntries() }
+                return@launch
+            }
+            remote.asSequence().take(limit).forEach { entry ->
+                val localTs = localStore.localModified(entry.id)
+                if (localTs == null || entry.modified > localTs) {
+                    val msgs = repository.getSessionMessages(entry.id)
+                    if (msgs.isNotEmpty()) localStore.save(entry, msgs)
+                }
+            }
+            _sessions.update { localStore.listEntries() }
+            Logger.log("SYNC", "Synced top $limit sessions; local count=${_sessions.value.size}")
         }
     }
 
@@ -137,7 +166,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _activeTabId.update { existing.id }
                 return@launch
             }
-            val msgs = repository.getSessionMessages(entry.id)
+            val cached = localStore.loadMessages(entry.id)
+            val msgs = cached.ifEmpty { repository.getSessionMessages(entry.id) }
             val tab = Tab(
                 title = Tab.titleFrom(entry.title),
                 messages = msgs,
@@ -146,6 +176,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _tabs.update { it + tab }
             _activeTabId.update { tab.id }
         }
+    }
+
+    /** Delete locally cached sessions older than [days] days. */
+    fun purgeLocalOlderThan(days: Int, onResult: (Int) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cutoff = (System.currentTimeMillis() / 1000L) - days * 86_400L
+            val deleted = localStore.purgeOlderThan(cutoff)
+            _sessions.update { localStore.listEntries() }
+            Logger.log("PURGE", "Deleted $deleted local sessions older than $days days")
+            onResult(deleted)
+        }
+    }
+
+    private fun persistActiveTab(tabId: String) {
+        val tab = _tabs.value.firstOrNull { it.id == tabId } ?: return
+        val sid = tab.sessionId ?: return
+        val entry = SessionListEntry(
+            id = sid,
+            title = if (tab.title == Tab.DEFAULT_TITLE) "(untitled)" else tab.title,
+            modified = System.currentTimeMillis() / 1000L,
+            turns = tab.messages.size,
+        )
+        localStore.save(entry, tab.messages)
+        _sessions.update { localStore.listEntries() }
     }
 
     private fun updateTab(tabId: String, transform: (Tab) -> Tab) {
