@@ -1,6 +1,7 @@
 package com.pascal.claudemobile.ui
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -33,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pascal.claudemobile.ChatViewModel
+import com.pascal.claudemobile.ConnectionStatus
 import com.pascal.claudemobile.R
 import com.pascal.claudemobile.data.Message
 import com.pascal.claudemobile.data.Role
@@ -48,6 +50,7 @@ fun ChatScreen(
     val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -80,6 +83,7 @@ fun ChatScreen(
                     onNewTab = viewModel::newTab,
                     onSendMessage = viewModel::sendMessage,
                     onOpenSettings = onOpenSettings,
+                    connectionStatus = connectionStatus,
                     onOpenHistory = {
                         viewModel.refreshSessions()
                         scope.launch { drawerState.open() }
@@ -101,6 +105,7 @@ private fun ChatBody(
     onSendMessage: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
+    connectionStatus: ConnectionStatus,
 ) {
     val active = tabs.firstOrNull { it.id == activeTabId } ?: tabs.firstOrNull()
     val messages = active?.messages.orEmpty()
@@ -186,6 +191,7 @@ private fun ChatBody(
                 onNew = onNewTab,
             )
             HorizontalDivider()
+            ConnectionStatusBanner(status = connectionStatus)
 
             if (messages.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -213,6 +219,43 @@ private fun ChatBody(
                     items(messages, key = { it.id }) { MessageBubble(it) }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatusBanner(status: ConnectionStatus) {
+    AnimatedVisibility(visible = status != ConnectionStatus.CONNECTED) {
+        val isChecking = status == ConnectionStatus.CHECKING
+        val containerColor = if (isChecking)
+            MaterialTheme.colorScheme.secondaryContainer
+        else
+            MaterialTheme.colorScheme.errorContainer
+        val contentColor = if (isChecking)
+            MaterialTheme.colorScheme.onSecondaryContainer
+        else
+            MaterialTheme.colorScheme.onErrorContainer
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(containerColor)
+                .padding(horizontal = 16.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            if (isChecking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(11.dp),
+                    strokeWidth = 1.5.dp,
+                    color = contentColor,
+                )
+                Spacer(Modifier.width(7.dp))
+            }
+            Text(
+                text = if (isChecking) "Connecting…" else "Proxy offline · Retrying…",
+                style = MaterialTheme.typography.labelSmall,
+                color = contentColor,
+            )
         }
     }
 }

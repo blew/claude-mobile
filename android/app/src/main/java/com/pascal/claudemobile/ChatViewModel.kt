@@ -11,11 +11,14 @@ import com.pascal.claudemobile.data.Role
 import com.pascal.claudemobile.data.SessionListEntry
 import com.pascal.claudemobile.data.Tab
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+enum class ConnectionStatus { CHECKING, CONNECTED, DISCONNECTED }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -34,6 +37,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _sessions = MutableStateFlow<List<SessionListEntry>>(emptyList())
     val sessions: StateFlow<List<SessionListEntry>> = _sessions.asStateFlow()
 
+    private val _connectionStatus = MutableStateFlow(ConnectionStatus.CHECKING)
+    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
+
     val serverUrl: String get() = repository.serverUrl
     val apiKey: String get() = repository.apiKey
     fun saveSettings(url: String, key: String) = repository.saveSettings(url, key)
@@ -42,10 +48,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         _sessions.update { localStore.listEntries() }
-        viewModelScope.launch(Dispatchers.IO) {
-            val health = repository.checkHealth()
-            Logger.log("HEALTH", health)
-        }
+        startHealthPolling()
         syncRecentSessions(limit = 10)
     }
 
@@ -190,6 +193,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _sessions.update { localStore.listEntries() }
             Logger.log("PURGE", "Deleted $deleted local sessions older than $days days")
             onResult(deleted)
+        }
+    }
+
+    private fun startHealthPolling() {
+        viewModelScope.launch(Dispatchers.IO) {
+            var backoffMs = 5_000L
+            while (true) {
+                if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
+                    _connectionStatus.update { ConnectionStatus.CHECKING }
+                }
+                val healthy = repository.checkHealth()
+                if (healthy) {
+                    _connectionStatus.update { ConnectionStatus.CONNECTED }
+                    backoffMs = 5_000L
+                    delay(30_000L)
+                } else {
+                    _connectionStatus.update { ConnectionStatus.DISCONNECTED }
+                    Logger.log("HEALTH", "Retry in ${backoffMs / 1000}s")
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(60_000L)
+                }
+            }
         }
     }
 

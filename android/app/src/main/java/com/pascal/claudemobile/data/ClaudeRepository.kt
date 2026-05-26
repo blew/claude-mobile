@@ -90,8 +90,8 @@ class ClaudeRepository(context: Context) {
         }
     }
 
-    /** GET /health — no auth required. Returns a human-readable status string for logging. */
-    fun checkHealth(): String {
+    /** GET /health — no auth required. Returns true if proxy is up. */
+    fun checkHealth(): Boolean {
         return try {
             val request = Request.Builder()
                 .url("$serverUrl/health")
@@ -100,12 +100,15 @@ class ClaudeRepository(context: Context) {
             val response = client.newCall(request).execute()
             val body = response.body?.string().orEmpty()
             if (response.isSuccessful) {
-                "Proxy OK — $body"
+                Logger.log("HEALTH", "Proxy OK — $body")
+                true
             } else {
-                "Proxy /health returned ${response.code}: $body"
+                Logger.log("HEALTH", "Proxy /health returned ${response.code}: $body")
+                false
             }
         } catch (e: Exception) {
-            "Proxy unreachable: ${e.javaClass.simpleName}: ${e.message}"
+            Logger.log("HEALTH", "Proxy unreachable: ${e.javaClass.simpleName}: ${e.message}")
+            false
         }
     }
 

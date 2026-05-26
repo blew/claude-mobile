@@ -337,12 +337,29 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
             self.wfile.flush()
 
+        # Send SSE comment pings every 15 s so the devtunnel reverse-proxy
+        # never hits its idle-connection timeout (which would return a 504
+        # with an empty body before Claude finishes responding).
+        _stop_ka = threading.Event()
+
+        def _keepalive():
+            while not _stop_ka.wait(15):
+                try:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                except Exception:
+                    break
+
+        ka = threading.Thread(target=_keepalive, daemon=True)
+        ka.start()
+
         try:
             for event in stream_claude(text, session_id):
                 sse(event)
         except Exception as exc:
             sse({"type": "error", "content": str(exc)})
         finally:
+            _stop_ka.set()
             sse({"type": "done"})
 
     def log_message(self, fmt, *args):
