@@ -11,6 +11,7 @@ import com.pascal.claudemobile.data.Role
 import com.pascal.claudemobile.data.SessionListEntry
 import com.pascal.claudemobile.data.Tab
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +40,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.CHECKING)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
+
+    private val _connectionError = MutableStateFlow<String?>(null)
+    val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
+
+    @Volatile private var isForeground = true
+    private var healthJob: Job? = null
+
+    fun setForeground(foreground: Boolean) {
+        isForeground = foreground
+        healthJob?.cancel()
+        if (foreground) {
+            healthJob = viewModelScope.launch(Dispatchers.IO) { healthLoop() }
+        }
+    }
 
     val serverUrl: String get() = repository.serverUrl
     val apiKey: String get() = repository.apiKey
@@ -197,23 +212,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startHealthPolling() {
-        viewModelScope.launch(Dispatchers.IO) {
-            var backoffMs = 5_000L
-            while (true) {
-                if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
-                    _connectionStatus.update { ConnectionStatus.CHECKING }
-                }
-                val healthy = repository.checkHealth()
-                if (healthy) {
-                    _connectionStatus.update { ConnectionStatus.CONNECTED }
-                    backoffMs = 5_000L
-                    delay(30_000L)
-                } else {
-                    _connectionStatus.update { ConnectionStatus.DISCONNECTED }
-                    Logger.log("HEALTH", "Retry in ${backoffMs / 1000}s")
-                    delay(backoffMs)
-                    backoffMs = (backoffMs * 2).coerceAtMost(60_000L)
-                }
+        healthJob = viewModelScope.launch(Dispatchers.IO) { healthLoop() }
+    }
+
+    private suspend fun healthLoop() {
+        while (true) {
+            if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
+                _connectionStatus.update { ConnectionStatus.CHECKING }
+            }
+            val error = repository.checkHealth()
+            if (error == null) {
+                _connectionStatus.update { ConnectionStatus.CONNECTED }
+                _connectionError.update { null }
+                delay(60_000L)
+            } else {
+                _connectionStatus.update { ConnectionStatus.DISCONNECTED }
+                _connectionError.update { error }
+                Logger.log("HEALTH", "Retry in 60s — $error")
+                delay(59_000L)
+                _connectionError.update { null }
+                delay(1_000L)
             }
         }
     }

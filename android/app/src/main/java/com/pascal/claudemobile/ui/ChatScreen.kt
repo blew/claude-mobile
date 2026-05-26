@@ -1,7 +1,6 @@
 package com.pascal.claudemobile.ui
 
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -21,9 +20,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -51,11 +55,25 @@ fun ChatScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+    val connectionError by viewModel.connectionError.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
     error?.let { LaunchedEffect(it) { viewModel.clearError() } }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setForeground(true)
+                Lifecycle.Event.ON_PAUSE -> viewModel.setForeground(false)
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Right-side drawer: wrap in Rtl then flip content back to Ltr.
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -84,6 +102,7 @@ fun ChatScreen(
                     onSendMessage = viewModel::sendMessage,
                     onOpenSettings = onOpenSettings,
                     connectionStatus = connectionStatus,
+                    connectionError = connectionError,
                     onOpenHistory = {
                         viewModel.refreshSessions()
                         scope.launch { drawerState.open() }
@@ -106,6 +125,7 @@ private fun ChatBody(
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
     connectionStatus: ConnectionStatus,
+    connectionError: String?,
 ) {
     val active = tabs.firstOrNull { it.id == activeTabId } ?: tabs.firstOrNull()
     val messages = active?.messages.orEmpty()
@@ -191,7 +211,7 @@ private fun ChatBody(
                 onNew = onNewTab,
             )
             HorizontalDivider()
-            ConnectionStatusBanner(status = connectionStatus)
+            ConnectionStatusBanner(status = connectionStatus, errorMessage = connectionError)
 
             if (messages.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -224,39 +244,58 @@ private fun ChatBody(
 }
 
 @Composable
-private fun ConnectionStatusBanner(status: ConnectionStatus) {
-    AnimatedVisibility(visible = status != ConnectionStatus.CONNECTED) {
-        val isChecking = status == ConnectionStatus.CHECKING
-        val containerColor = if (isChecking)
-            MaterialTheme.colorScheme.secondaryContainer
-        else
-            MaterialTheme.colorScheme.errorContainer
-        val contentColor = if (isChecking)
-            MaterialTheme.colorScheme.onSecondaryContainer
-        else
-            MaterialTheme.colorScheme.onErrorContainer
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(containerColor)
-                .padding(horizontal = 16.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            if (isChecking) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(11.dp),
-                    strokeWidth = 1.5.dp,
-                    color = contentColor,
-                )
-                Spacer(Modifier.width(7.dp))
-            }
-            Text(
-                text = if (isChecking) "Connecting…" else "Proxy offline · Retrying…",
-                style = MaterialTheme.typography.labelSmall,
+private fun ConnectionStatusBanner(status: ConnectionStatus, errorMessage: String?) {
+    val isConnected = status == ConnectionStatus.CONNECTED
+    val isChecking = status == ConnectionStatus.CHECKING
+    val showSpinner = isChecking || (status == ConnectionStatus.DISCONNECTED && errorMessage == null)
+
+    val containerColor = when {
+        isConnected -> Color(0xFFE8F5E9)
+        showSpinner -> MaterialTheme.colorScheme.secondaryContainer
+        else -> MaterialTheme.colorScheme.errorContainer
+    }
+    val contentColor = when {
+        isConnected -> Color(0xFF2E7D32)
+        showSpinner -> MaterialTheme.colorScheme.onSecondaryContainer
+        else -> MaterialTheme.colorScheme.onErrorContainer
+    }
+    val text = when {
+        isConnected -> "Connected"
+        isChecking -> "Connecting…"
+        errorMessage != null -> errorMessage
+        else -> "Retrying…"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(containerColor)
+            .padding(horizontal = 16.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        if (isConnected) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(Color(0xFF2E7D32), shape = RoundedCornerShape(3.dp))
+            )
+            Spacer(Modifier.width(6.dp))
+        } else if (showSpinner) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(11.dp),
+                strokeWidth = 1.5.dp,
                 color = contentColor,
             )
+            Spacer(Modifier.width(7.dp))
         }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
